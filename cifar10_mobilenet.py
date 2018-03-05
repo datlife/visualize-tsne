@@ -12,8 +12,8 @@ import model
 _CIFAR10_CLASSES = 10
 _HEIGHT, _WIDTH, _DEPTH = 128, 128, 3
 
-_BATCH_SIZE = 128
 _NUM_EPOCHS = 3
+_BATCH_SIZE = 128
 _SHUFFLE_BUFFER = 1000
 
 tf.logging.set_verbosity(tf.logging.DEBUG)
@@ -29,28 +29,29 @@ def main():
     model_dir='model')
 
   print('Starting a training cycle.')
-  images, labels = cifar10[0]  # training
+  images, labels = cifar10[0]
+  training_data = tf.data.Dataset.from_tensor_slices((images, labels))
 
   classifier.train(
       input_fn=lambda: dataset.input_fn(
           is_training=True,
+          dataset=training_data,
+          preprocess_fn=cifar10_preprocess,
           num_epochs=_NUM_EPOCHS,
           batch_size=_BATCH_SIZE,
-          preprocess_fn=cifar10_preprocess,
           shuffle_buffer=_SHUFFLE_BUFFER,
-          num_parallel_calls=16,
-          dataset=tf.data.Dataset.from_tensor_slices((images, labels))),)
+          num_parallel_calls=16),)
 
   print('Starting to evaluate.')
   test_images, test_labels = cifar10[1]  # testing
-
+  test_data = tf.data.Dataset.from_tensor_slices((test_images, test_labels))
   eval_results = classifier.evaluate(
       input_fn=lambda: dataset.input_fn(
         is_training=False,
+        dataset=test_data,
+        preprocess_fn=cifar10_preprocess,
         num_epochs=1,
         batch_size=_BATCH_SIZE,
-        preprocess_fn=cifar10_preprocess,
-        dataset=tf.data.Dataset.from_tensor_slices((test_images, test_labels)),
         shuffle_buffer=_SHUFFLE_BUFFER,
         num_parallel_calls=16))
 
