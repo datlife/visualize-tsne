@@ -42,6 +42,7 @@ def model_fn(features, labels, mode, construct_model_fn, optimizer, params):
       is_training=(mode == tf.estimator.ModeKeys.TRAIN))
 
   logits = model.outputs
+
   predictions = {
       'classes': tf.argmax(logits),
       'probabilities': tf.nn.softmax(logits, name='softmax_tensor')}
@@ -60,8 +61,6 @@ def model_fn(features, labels, mode, construct_model_fn, optimizer, params):
 
   if mode == tf.estimator.ModeKeys.TRAIN:
     global_step = tf.train.get_or_create_global_step()
-    # Batch norm requires update ops to be added
-    # as a dependency to the train op.
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     train_op = tf.group(optimizer.minimize(loss, global_step), update_ops)
   else:
@@ -76,40 +75,3 @@ def model_fn(features, labels, mode, construct_model_fn, optimizer, params):
       loss=loss,
       train_op=train_op,
       eval_metric_ops={'accuracy': accuracy})
-
-
-def mobilenet_fn(input_tensor, num_classes, is_training):
-  """
-
-  Args:
-    input_tensor:
-    num_classes:
-    is_training:
-
-  Returns:
-
-  """
-  with tf.variable_scope(name_or_scope='mobilenet', reuse=tf.AUTO_REUSE):
-    tf.keras.backend.set_learning_phase(is_training)
-
-    model = tf.keras.applications.MobileNet(
-        input_tensor=input_tensor,
-        include_top=True,
-        weights=None)
-
-    # Remove the last two layer (Conv2D, Reshape)
-    # for fine-tuning on CIFAR-10.
-    logits = tf.keras.layers.Conv2D(
-        filters=num_classes, activation='softmax',
-        kernel_size=(1, 1),
-        padding='same')(model.layers[-4].output)
-    # Create a new output layer for CIFAR-10.
-    logits = tf.keras.layers.Reshape(
-        target_shape=(num_classes,),
-        name='output')(logits)
-
-    model = tf.keras.Model(
-        inputs=model.inputs,
-        outputs=logits)
-
-  return model
