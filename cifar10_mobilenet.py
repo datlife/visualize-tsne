@@ -6,9 +6,8 @@ In this case, this script will:
   * Visualize t-SNE
 """
 import tensorflow as tf
-
-from dataset import input_fn
-from model import get_estimator, model_fn, mobilenet_fn
+import dataset
+import model
 
 _CIFAR10_CLASSES = 10
 _HEIGHT, _WIDTH, _DEPTH = 128, 128, 3
@@ -18,6 +17,20 @@ _NUM_EPOCHS = 3
 _SHUFFLE_BUFFER = 1000
 
 tf.logging.set_verbosity(tf.logging.DEBUG)
+
+
+def cifar10_mobilenet_fn(features, labels, mode, params):
+  params['weight_decay'] = 2e-4
+  params['num_classes'] = _CIFAR10_CLASSES
+
+  learning_rate = 0.001
+  optimizer = tf.train.AdamOptimizer(learning_rate)
+
+  return model.model_fn(
+      features, labels, mode,
+      construct_model_fn=model.mobilenet_fn,
+      optimizer=optimizer,
+      params=params)
 
 
 def cifar10_preprocess(image, label, is_training):
@@ -32,29 +45,19 @@ def cifar10_preprocess(image, label, is_training):
   return image, label
 
 
-def cifar10_mobilenet_fn(features, labels, mode, params):
-  learning_rate = 0.001
-  optimizer = tf.train.AdamOptimizer(learning_rate)
-  params['weight_decay'] = 2e-4
-  return model_fn(features, labels, mode,
-                  construct_model_fn=mobilenet_fn,
-                  optimizer=optimizer,
-                  params=params)
-
-
 def main():
   cifar10 = tf.keras.datasets.cifar10.load_data()
 
   # Create an Estimator for training/evaluation
-  classifier = get_estimator(
+  classifier = model.get_estimator(
     model_function=cifar10_mobilenet_fn,
     model_dir='model')
 
   print('Starting a training cycle.')
-  images, labels = cifar10[0]
+  images, labels = cifar10[0]  # training
 
   classifier.train(
-      input_fn=lambda: input_fn(
+      input_fn=lambda: dataset.input_fn(
           is_training=True,
           num_epochs=_NUM_EPOCHS,
           batch_size=_BATCH_SIZE,
@@ -64,10 +67,10 @@ def main():
           dataset=tf.data.Dataset.from_tensor_slices((images, labels))),)
 
   print('Starting to evaluate.')
-  test_images, test_labels = cifar10[1]
+  test_images, test_labels = cifar10[1]  # testing
 
   eval_results = classifier.evaluate(
-      input_fn=lambda: input_fn(
+      input_fn=lambda: dataset.input_fn(
         is_training=False,
         num_epochs=1,
         batch_size=_BATCH_SIZE,

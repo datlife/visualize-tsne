@@ -20,48 +20,19 @@ def get_estimator(model_function, model_dir):
   return classifier
 
 
-def mobilenet_fn(input_tensor, num_classes, is_training):
+def model_fn(features, labels, mode, construct_model_fn, optimizer, params):
   """
 
   Args:
-    input_tensor:
-    num_classes:
-    is_training:
+    features:
+    labels:
+    mode:
+    construct_model_fn:
+    optimizer:
+    params:
 
   Returns:
 
-  """
-  with tf.variable_scope(name_or_scope='mobilenet', reuse=tf.AUTO_REUSE):
-    tf.keras.backend.set_learning_phase(is_training)
-
-    model = tf.keras.applications.MobileNet(
-        input_tensor=input_tensor,
-        include_top=True,
-        weights=None)
-
-    # Remove the last two layer (Conv2D, Reshape)
-    # for fine-tuning on CIFAR-10.
-    logits = tf.keras.layers.Conv2D(
-        filters=num_classes, activation='softmax',
-        kernel_size=(1, 1),
-        padding='same')(model.layers[-4].output)
-    # Create a new output layer for CIFAR-10.
-    logits = tf.keras.layers.Reshape(
-        target_shape=(num_classes,),
-        name='output')(logits)
-
-    model = tf.keras.Model(
-        inputs=model.inputs,
-        outputs=logits)
-
-  return model
-
-
-def model_fn(features, labels, mode, construct_model_fn, optimizer, params):
-  """Construct `model_fn` for estimator
-
-  Returns:
-    EstimatorSpec
   """
   tf.summary.image('images', features, max_outputs=6)
 
@@ -105,3 +76,40 @@ def model_fn(features, labels, mode, construct_model_fn, optimizer, params):
       loss=loss,
       train_op=train_op,
       eval_metric_ops={'accuracy': accuracy})
+
+
+def mobilenet_fn(input_tensor, num_classes, is_training):
+  """
+
+  Args:
+    input_tensor:
+    num_classes:
+    is_training:
+
+  Returns:
+
+  """
+  with tf.variable_scope(name_or_scope='mobilenet', reuse=tf.AUTO_REUSE):
+    tf.keras.backend.set_learning_phase(is_training)
+
+    model = tf.keras.applications.MobileNet(
+        input_tensor=input_tensor,
+        include_top=True,
+        weights=None)
+
+    # Remove the last two layer (Conv2D, Reshape)
+    # for fine-tuning on CIFAR-10.
+    logits = tf.keras.layers.Conv2D(
+        filters=num_classes, activation='softmax',
+        kernel_size=(1, 1),
+        padding='same')(model.layers[-4].output)
+    # Create a new output layer for CIFAR-10.
+    logits = tf.keras.layers.Reshape(
+        target_shape=(num_classes,),
+        name='output')(logits)
+
+    model = tf.keras.Model(
+        inputs=model.inputs,
+        outputs=logits)
+
+  return model
