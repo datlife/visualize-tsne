@@ -37,38 +37,41 @@ def main():
         'weight_decay': 2e-4,
         'multi_gpu': False})
 
+  tensors_to_log = {
+    'train_accuracy': 'train_accuracy',
+    'training_loss': 'training_loss'}
+
   # #########################
   # Training/Eval
   # #########################
   training_epochs = 8
   epochs_per_eval = 3
-  steps_per_epoch = 20
-  hooks = [KerasLogger(training_epochs, steps_per_epoch)]
+  steps_per_epoch = 100
+  hooks = [KerasLogger(tensors_to_log, training_epochs, steps_per_epoch)]
 
   print("Starting a training cycle")
   for _ in range(training_epochs // epochs_per_eval):
     classifier.train(
       input_fn=lambda: input_fn(
           tf.estimator.ModeKeys.TRAIN, cifar10[0],
-          epochs_per_eval,
-          128,
+          epochs_per_eval, 128,
           cifar10_preprocess, 128, 8, True),
       steps=epochs_per_eval * steps_per_epoch,
       hooks=hooks)
-
-    eval_results = classifier.evaluate(input_fn=lambda: input_fn(
-        tf.estimator.ModeKeys.EVAL, cifar10[1], None, 128,
-        cifar10_preprocess, None, 8, True), steps=10)
-    print(eval_results)
-
-  # ##################################
-  # Visualize t-SNE
-  # ###################################
-  outdir = 'model/projector'
-  # Randomly pick 50 samples from each class
-  images, labels = get_samples(cifar10[1], logdir=outdir,
-                               samples_per_class=50)
-  visualize_embeddings(images, classifier, outdir)
+  #
+  #   eval_results = classifier.evaluate(input_fn=lambda: input_fn(
+  #       tf.estimator.ModeKeys.EVAL, cifar10[1], None, 128,
+  #       cifar10_preprocess, None, 8, True), steps=10)
+  #   print(eval_results)
+  #
+  # # ##################################
+  # # Visualize t-SNE
+  # # ###################################
+  # outdir = 'model/projector'
+  # # Randomly pick 50 samples from each class
+  # images, labels = get_samples(cifar10[1], logdir=outdir,
+  #                              samples_per_class=50)
+  # visualize_embeddings(images, classifier, outdir)
 
 # #############################################################################
 # CIFAR-10 PROCESSING
@@ -183,9 +186,16 @@ def cifar10_model_fn(features, labels, mode, params):
   else:
     train_op = None
 
-  metrics = {'accuracy': tf.metrics.accuracy(tf.argmax(labels, axis=1),
-                                             predictions['classes'])}
+  accuracy = tf.metrics.accuracy(
+      tf.argmax(labels, axis=1), predictions['classes'])
+  metrics = {'accuracy': accuracy}
 
+  # Create a tensor named train_accuracy for logging purposes
+  tf.identity(accuracy[1], name='train_accuracy')
+  tf.summary.scalar('train_accuracy', accuracy[1])
+
+  tf.identity(loss, name='training_loss')
+  tf.summary.scalar('training_loss', loss)
   return tf.estimator.EstimatorSpec(
       mode=mode,
       predictions=predictions,
