@@ -42,11 +42,12 @@ class KerasLogger(tf.train.SessionRunHook):
     self._curr_step -= self._curr_epoch * self._step_per_epoch
     self._first_run = True
 
-    if self._curr_step is not 0:
+    if self._curr_step != 0:
       print("Resuming training from global step(s): %s...\n" % self._curr_step)
 
   def before_run(self, run_context):
     if self._first_run is  True:
+      self._curr_epoch += 1
       print('Epoch %s/%s:' % (self._curr_epoch, self._epochs))
       self.progbar = tf.keras.utils.Progbar(target=self._step_per_epoch)
       self._first_run = False
