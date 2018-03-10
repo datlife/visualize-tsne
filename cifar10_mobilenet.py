@@ -9,6 +9,7 @@ import os
 import pandas as pd
 import numpy as np
 import tensorflow as tf
+
 from scipy.misc import imsave
 from tensorboard.plugins import projector
 from kerasHook import KerasLogger
@@ -16,68 +17,97 @@ from kerasHook import KerasLogger
 
 _CIFAR10_CLASSES = 10
 _HEIGHT, _WIDTH, _DEPTH = 128, 128, 3
+_INIT_WEIGHTS = True
+
+# Disable debugging info from TF
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # or any {'0', '1', '2'}
 
 
 def main():
   # ########################
+  # Configure hyper-params
+  # ########################
+  training_steps  = 3e4
+  steps_per_epoch = 1000
+  epochs_per_eval = 3
+  training_epochs = int(training_steps // steps_per_epoch)
+
+  batch_size = 128
+  num_cores = 8
+  shuffle_buffer = 1000
+
+  multi_gpu = True
+  # ########################
   # Load CIFAR-10 dataset
   # ########################
   cifar10 = tf.keras.datasets.cifar10.load_data()
 
-  # Create an Estimator for training/evaluation
+  # ########################
+  # Define an Estimator
+  # ########################
+  if multi_gpu:
+    model_fn = tf.contrib.estimator.replicate_model_fn(
+        cifar10_model_fn,
+        loss_reduction=tf.losses.Reduction.MEAN)
+  else:
+    model_fn = cifar10_model_fn
+
   classifier = tf.estimator.Estimator(
-      model_fn=cifar10_model_fn, model_dir='model',
+      model_fn=model_fn,
+      model_dir='model',
       config=tf.estimator.RunConfig().replace(
         keep_checkpoint_max=2,
-        save_checkpoints_steps=500,
+        save_checkpoints_steps=steps_per_epoch,
         save_summary_steps=50,),
       params={
-        'learning_rate': 0.01,
+        'learning_rate': 0.001,
+        'optimizer': tf.train.AdamOptimizer,
         'weight_decay': 2e-4,
-        'multi_gpu': False})
+        'multi_gpu': multi_gpu})
 
-  tensors_to_log = {
-    'train_accuracy': 'train_accuracy',
-    'training_loss': 'training_loss'}
-
+  tensors_to_log = ['train_acc', 'train_loss']
   # #########################
   # Training/Eval
   # #########################
-  training_epochs = 8
-  epochs_per_eval = 3
-  steps_per_epoch = 100
-  hooks = [KerasLogger(tensors_to_log, training_epochs, steps_per_epoch)]
 
+  print("==========================")
   print("Starting a training cycle")
+  print("Multi_GPU: %s" % multi_gpu)
+  print("Batch_size %s" % batch_size)
+  print("Total Steps %s" % training_steps)
+  print("==========================")
+
   for _ in range(training_epochs // epochs_per_eval):
     classifier.train(
       input_fn=lambda: input_fn(
-          tf.estimator.ModeKeys.TRAIN, cifar10[0],
-          epochs_per_eval, 128,
-          cifar10_preprocess, 128, 8, True),
+          tf.estimator.ModeKeys.TRAIN, cifar10[0], epochs_per_eval, batch_size,
+          cifar10_preprocess, shuffle_buffer, num_cores, multi_gpu),
       steps=epochs_per_eval * steps_per_epoch,
-      hooks=hooks)
-  #
-  #   eval_results = classifier.evaluate(input_fn=lambda: input_fn(
-  #       tf.estimator.ModeKeys.EVAL, cifar10[1], None, 128,
-  #       cifar10_preprocess, None, 8, True), steps=10)
-  #   print(eval_results)
-  #
-  # # ##################################
-  # # Visualize t-SNE
-  # # ###################################
-  # outdir = 'model/projector'
-  # # Randomly pick 50 samples from each class
-  # images, labels = get_samples(cifar10[1], logdir=outdir,
-  #                              samples_per_class=50)
-  # visualize_embeddings(images, classifier, outdir)
+      hooks=[KerasLogger(training_epochs, steps_per_epoch, tensors_to_log)])
+
+    print("\nStart evaluating...")
+    eval_results = classifier.evaluate(
+      input_fn=lambda: input_fn(
+        tf.estimator.ModeKeys.EVAL, cifar10[1], None, batch_size,
+        cifar10_preprocess, None, num_cores, multi_gpu),
+      steps=steps_per_epoch,
+    )
+    print(eval_results)
+
+  # ##################################
+  # Visualize t-SNE
+  # ###################################
+  outdir = 'model/projector'
+  # Randomly pick 50 samples from each class
+  images, labels = get_samples(cifar10[1], logdir=outdir,
+                               samples_per_class=50)
+
+  visualize_embeddings(images, classifier, outdir)
 
 # #############################################################################
 # CIFAR-10 PROCESSING
 # #############################################################################
 def cifar10_preprocess(image, label, mode):
-  # Subtract off the mean and divide by the variance of the pixels.
   image = tf.image.per_image_standardization(image)
   image = tf.image.resize_image_with_crop_or_pad(image, _HEIGHT, _WIDTH)
 
@@ -122,7 +152,6 @@ def input_fn(mode, dataset, num_epochs, batch_size,
     dataset = dataset.shuffle(buffer_size=shuffle_buffer)
 
   dataset = dataset.repeat(num_epochs)
-
   if mode != tf.estimator.ModeKeys.PREDICT:
     dataset = dataset.map(
         lambda image, label: preprocess_fn(image, label, mode),
@@ -157,8 +186,9 @@ def cifar10_model_fn(features, labels, mode, params):
 
   """
 
-  model = mobilenet_fn(input_tensor=features, num_classes=10, mode=mode)
+  model = mobilenet_fn(input_tensor=features, num_classes=10)
   logits = model.outputs[0]
+
   predictions = {
       'classes': tf.argmax(logits, axis=1),
       'probabilities': tf.nn.softmax(logits, name='softmax_tensor'),
@@ -170,15 +200,30 @@ def cifar10_model_fn(features, labels, mode, params):
         mode=mode,
         predictions=predictions)
 
-  loss = tf.losses.softmax_cross_entropy(labels, logits) + \
-         params['weight_decay'] * \
+  # L2 Loss with weight decay
+  cross_entropy = tf.losses.softmax_cross_entropy(
+      onehot_labels=labels, logits=logits)
+  loss = cross_entropy + params['weight_decay'] * \
          tf.add_n([tf.nn.l2_loss(t) for t in tf.trainable_variables()])
+
+  # Setting up metrics
+  accuracy = tf.metrics.accuracy(
+      tf.argmax(labels, axis=1), predictions['classes'])
+  metrics = {'accuracy': accuracy}
 
   if mode == tf.estimator.ModeKeys.TRAIN:
     global_step = tf.train.get_or_create_global_step()
-    optimizer = tf.train.AdamOptimizer(params['learning_rate'])
+    optimizer = params['optimizer'](params['learning_rate'])
+
+    # Create a tensor named train_accuracy for logging purposes
+    tf.identity(accuracy[1], name='train_acc')
+    tf.identity(loss, name='train_loss')
+    tf.summary.scalar('train_acc', accuracy[1])
+    tf.summary.scalar('train_loss', loss)
+
     if params['multi_gpu']:
       optimizer = tf.contrib.estimator.TowerOptimizer(optimizer)
+
     # update ops for Batch Norm
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     with tf.control_dependencies(update_ops):
@@ -186,16 +231,6 @@ def cifar10_model_fn(features, labels, mode, params):
   else:
     train_op = None
 
-  accuracy = tf.metrics.accuracy(
-      tf.argmax(labels, axis=1), predictions['classes'])
-  metrics = {'accuracy': accuracy}
-
-  # Create a tensor named train_accuracy for logging purposes
-  tf.identity(accuracy[1], name='train_accuracy')
-  tf.summary.scalar('train_accuracy', accuracy[1])
-
-  tf.identity(loss, name='training_loss')
-  tf.summary.scalar('training_loss', loss)
   return tf.estimator.EstimatorSpec(
       mode=mode,
       predictions=predictions,
@@ -203,7 +238,7 @@ def cifar10_model_fn(features, labels, mode, params):
       train_op=train_op,
       eval_metric_ops=metrics)
 
-def mobilenet_fn(input_tensor, num_classes, mode):
+def mobilenet_fn(input_tensor, num_classes):
   """Mobilenet
 
   Args:
@@ -213,14 +248,19 @@ def mobilenet_fn(input_tensor, num_classes, mode):
   Returns:
     model: tf.models.Model
   """
+  global _INIT_WEIGHTS
+
   mobile_net = tf.keras.applications.MobileNet(
       input_tensor=input_tensor,
       input_shape=(128, 128, 3),
       include_top=False,
-      weights=None)
+      weights='imagenet' if _INIT_WEIGHTS else None)
+
+  _INIT_WEIGHTS = False
 
   feature_map = tf.keras.layers.GlobalAvgPool2D()(mobile_net.layers[-1].output)
-  logits = tf.keras.layers.Dense(num_classes, name='output')(feature_map)
+  logits = tf.keras.layers.Activation(activation='relu')(feature_map)
+  logits = tf.keras.layers.Dense(num_classes, name='output')(logits)
 
   mobile_net = tf.keras.models.Model(
       inputs=mobile_net.inputs,
@@ -245,7 +285,6 @@ def get_samples(data, samples_per_class, logdir):
       meta_file.write('{},{}\n'.format(s, cls))
 
   meta_file.close()
-
   # flatten list
   samples_idx = [item for sublist in samples for item in sublist]
   return images[samples_idx], labels[samples_idx]
@@ -295,21 +334,17 @@ def visualize_embeddings(images, estimator, outdir):
   with tf.Session() as sess:
     sess.run(embedding_var.initializer)
     config = projector.ProjectorConfig()
-
     embedding = config.embeddings.add()
     embedding.tensor_name = embedding_var.name
     embedding.metadata_path = 'metadata.csv'
-    # Comment out if you don't want sprites
     embedding.sprite.image_path = os.path.join(outdir, 'sprite.png')
     embedding.sprite.single_image_dim.extend([32, 32])
-
     projector.visualize_embeddings(summary_writer, config)
     saver = tf.train.Saver([embedding_var])
     saver.save(sess, os.path.join(outdir, 'model2.ckpt'), 1)
-
   sprite = images_to_sprite(images)
   imsave(os.path.join(outdir, 'sprite.png'), sprite)
 
 
 if __name__ == '__main__':
-    main();
+    main()
