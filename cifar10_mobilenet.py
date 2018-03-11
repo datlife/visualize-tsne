@@ -12,29 +12,31 @@ import pandas as pd
 import tensorflow as tf
 from scipy.misc import imsave
 from tensorboard.plugins import projector
-from kerasHook import KerasLogger
+from kerasHook import ProgressBar
 
 
 _CIFAR10_CLASSES = 10
 _HEIGHT, _WIDTH, _DEPTH = 32, 32, 3
+_CLASSES = ('plane', 'car', 'bird', 'cat', 'deer',
+            'dog', 'frog', 'horse', 'ship', 'truck')
 
 # Disable debugging info from TF
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # or any {'0', '1', '2'}
-
+# tf.logging.set_verbosity(tf.logging.DEBUG)
 
 def main():
   # ########################
   # Configure hyper-params
   # ########################
-  batch_size = 256
+  batch_size = 1024
 
-  training_steps  = 3e4
+  training_steps  = 5000
   steps_per_epoch = 1000
-  epochs_per_eval = 5
+  epochs_per_eval = 1
   training_epochs = int(training_steps // steps_per_epoch)
 
   num_cores = 8
-  shuffle_buffer = 1000
+  shuffle_buffer = 2048
 
   multi_gpu = True
   # ########################
@@ -58,8 +60,7 @@ def main():
       config=tf.estimator.RunConfig().replace(
         keep_checkpoint_max=2,
         save_checkpoints_steps=steps_per_epoch,
-        save_summary_steps=200,
-       ),
+        save_summary_steps=200,),
       params={
         'learning_rate': 0.001,
         'optimizer': tf.train.AdamOptimizer,
@@ -86,15 +87,13 @@ def main():
           tf.estimator.ModeKeys.TRAIN, cifar10[0], None, batch_size,
           cifar10_preprocess, shuffle_buffer, num_cores, multi_gpu),
       steps=epochs_per_eval * steps_per_epoch,
-      hooks=[KerasLogger(training_epochs, steps_per_epoch, tensors_to_log)])
+      hooks=[ProgressBar(training_epochs, steps_per_epoch, tensors_to_log)])
 
     print("\nStart evaluating...")
     eval_results = classifier.evaluate(
       input_fn=lambda: input_fn(
-        tf.estimator.ModeKeys.EVAL, cifar10[1], None, batch_size,
-        cifar10_preprocess, None, num_cores, multi_gpu),
-      steps=steps_per_epoch,
-    )
+        tf.estimator.ModeKeys.EVAL, cifar10[1], 1, batch_size,
+        cifar10_preprocess, None, num_cores, multi_gpu))
     print(eval_results)
 
   # ##################################
@@ -102,8 +101,8 @@ def main():
   # ###################################
   outdir = 'model/projector'
   # Randomly pick 50 samples from each class
-  images, labels = get_samples(cifar10[1], logdir=outdir,
-                               samples_per_class=50)
+  images, labels = get_samples(cifar10[0], logdir=outdir,
+                               samples_per_class=100)
 
   visualize_embeddings(images, classifier, outdir)
 
@@ -155,13 +154,13 @@ def input_fn(mode, dataset, num_epochs, batch_size,
     dataset = dataset.shuffle(buffer_size=shuffle_buffer)
 
   dataset = dataset.repeat(num_epochs)
-  # if mode != tf.estimator.ModeKeys.PREDICT:
-  dataset = dataset.map(
-      lambda image, label: preprocess_fn(image, label, mode),
-      num_parallel_calls=num_parallel_calls)
-  # else:
-  #   dataset = dataset.map(
-  #       lambda image: preprocess_fn(image, None, mode), num_parallel_calls)
+  if mode != tf.estimator.ModeKeys.PREDICT:
+    dataset = dataset.map(
+        lambda image, label: preprocess_fn(image, label, mode),
+        num_parallel_calls=num_parallel_calls)
+  else:
+    dataset = dataset.map(
+        lambda image: preprocess_fn(image, None, mode), num_parallel_calls)
 
   dataset = dataset.batch(batch_size)
   # Operations between the final prefetch and the get_next call to the iterator
@@ -201,6 +200,7 @@ def cifar10_model_fn(features, labels, mode, params):
       pooling='avg',
       weights=None)
   feature_map = model(features)
+  feature_map = tf.keras.layers.Dropout(0.7)(feature_map)
   logits = tf.keras.layers.Dense(units=_CIFAR10_CLASSES)(feature_map)
 
   predictions = {
@@ -219,7 +219,6 @@ def cifar10_model_fn(features, labels, mode, params):
       onehot_labels=labels, logits=logits)
   loss = cross_entropy + params['weight_decay'] * \
          tf.add_n([tf.nn.l2_loss(t) for t in tf.trainable_variables()])
-  loss = cross_entropy
 
   # Setting up metrics
   accuracy = tf.metrics.accuracy(
@@ -258,50 +257,6 @@ def cifar10_model_fn(features, labels, mode, params):
 # #############################################################################
 # VISUALIZE T-SNE
 # #############################################################################
-def get_samples(data, samples_per_class, logdir):
-  images, labels = data
-
-  df = pd.DataFrame(labels, columns=['labels']).groupby('labels')
-  samples = []
-  meta_file = open(os.path.join(logdir, 'metadata.csv'), 'w')
-  for cls in df.groups:
-    samples_per_list = list(df.get_group(cls).sample(samples_per_class).index.values)
-    samples.append(samples_per_list)
-    for s in samples_per_list:
-      meta_file.write('{},{}\n'.format(s, cls))
-
-  meta_file.close()
-  # flatten list
-  samples_idx = [item for sublist in samples for item in sublist]
-  return images[samples_idx], labels[samples_idx]
-
-
-def images_to_sprite(data):
-  """Creates the sprite image along with any necessary padding.
-  Taken from: https://github.com/tensorflow/tensorflow/issues/6322
-  Args:
-    data: NxHxW[x3] tensor containing the images.
-  Returns:
-    data: Properly shaped HxWx3 image with any necessary padding.
-  """
-  if len(data.shape) == 3:
-    data = np.tile(data[..., np.newaxis], (1, 1, 1, 3))
-  data = data.astype(np.float32)
-  min_v = np.min(data.reshape((data.shape[0], -1)), axis=1)
-  data = (data.transpose(1, 2, 3, 0) - min_v).transpose(3, 0, 1, 2)
-  max_v = np.max(data.reshape((data.shape[0], -1)), axis=1)
-  data = (data.transpose(1, 2, 3, 0) / max_v).transpose(3, 0, 1, 2)
-  n = int(np.ceil(np.sqrt(data.shape[0])))
-  padding = ((0, n ** 2 - data.shape[0]), (0, 0),
-             (0, 0)) + ((0, 0),) * (data.ndim - 3)
-  data = np.pad(data, padding, mode='constant',
-                constant_values=0)
-  # Tile the individual thumbnails into an image.
-  data = data.reshape((n, n) + data.shape[1:]).transpose(
-      (0, 2, 1, 3) + tuple(range(4, data.ndim + 1)))
-  data = data.reshape((n * data.shape[1], n * data.shape[3]) + data.shape[4:])
-  data = (data * 255).astype(np.uint8)
-  return data
 
 def visualize_embeddings(images, estimator, outdir):
 
@@ -320,16 +275,60 @@ def visualize_embeddings(images, estimator, outdir):
   with tf.Session() as sess:
     sess.run(embedding_var.initializer)
     config = projector.ProjectorConfig()
+
     embedding = config.embeddings.add()
     embedding.tensor_name = embedding_var.name
-    embedding.metadata_path = 'metadata.csv'
-    embedding.sprite.image_path = os.path.join(outdir, 'sprite.png')
+    embedding.metadata_path = os.path.abspath(os.path.join(outdir, 'metadata.csv'))
+    embedding.sprite.image_path = os.path.abspath(os.path.join(outdir, 'sprite.png'))
     embedding.sprite.single_image_dim.extend([32, 32])
+
     projector.visualize_embeddings(summary_writer, config)
     saver = tf.train.Saver([embedding_var])
-    saver.save(sess, os.path.join(outdir, 'model2.ckpt'), 1)
+
+    saver.save(sess, os.path.join(outdir, 'embeddings.ckpt'), 1)
+
   sprite = images_to_sprite(images)
   imsave(os.path.join(outdir, 'sprite.png'), sprite)
+
+def get_samples(data, samples_per_class, logdir):
+  images, labels = data
+
+  df = pd.DataFrame(labels, columns=['labels']).groupby('labels')
+  samples = []
+  meta_file = open(os.path.join(logdir, 'metadata.csv'), 'w')
+  for cls in df.groups:
+    samples_per_list = list(df.get_group(cls).sample(samples_per_class).index.values)
+    samples.append(samples_per_list)
+    for s in samples_per_list:
+      meta_file.write('{},{}\n'.format(s, _CLASSES[cls]))
+
+  meta_file.close()
+  # flatten list
+  samples_idx = [item for sublist in samples for item in sublist]
+  return images[samples_idx], labels[samples_idx]
+
+
+def images_to_sprite(data):
+  """Creates the sprite image along with any necessary padding.
+  Taken from: https://github.com/tensorflow/tensorflow/issues/6322
+  Args:
+    data: NxHxW[x3] tensor containing the images.
+  Returns:
+    data: Properly shaped HxWx3 image with any necessary padding.
+  """
+  if len(data.shape) == 3:
+    data = np.tile(data[..., np.newaxis], (1, 1, 1, 3))
+  data = data.astype(np.uint8)
+  n = int(np.ceil(np.sqrt(data.shape[0])))
+  padding = ((0, n ** 2 - data.shape[0]), (0, 0),
+             (0, 0)) + ((0, 0),) * (data.ndim - 3)
+  data = np.pad(data, padding, mode='constant',
+                constant_values=0)
+  # Tile the individual thumbnails into an image.
+  data = data.reshape((n, n) + data.shape[1:]).transpose(
+      (0, 2, 1, 3) + tuple(range(4, data.ndim + 1)))
+  data = data.reshape((n * data.shape[1], n * data.shape[3]) + data.shape[4:])
+  return data
 
 
 if __name__ == '__main__':
