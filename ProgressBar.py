@@ -35,7 +35,7 @@ from tensorflow.python.keras.utils import Progbar
 
 @tf_export('train.ProgressBarHook')
 class ProgressBarHook(tf.train.SessionRunHook):
-  """Monitors training progress. This Hook uses `tf.keras.utils.ProgBar` to
+  """Monitors training progress. This hook uses `tf.keras.utils.ProgBar` to
   write messages to stdout.
 
   Example:

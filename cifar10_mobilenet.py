@@ -3,12 +3,13 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import pandas as pd
 import tensorflow as tf
-from ProgressBar import ProgressBar
+from ProgressBar import ProgressBarHook
 
 from input_fn import input_fn
 from model_fn import cifar10_mobilenet
-from visualize import visualize_embeddings, get_samples
+from visualize import visualize_embeddings
 
 _CIFAR10_CLASSES = 10
 _HEIGHT, _WIDTH, _DEPTH = 32, 32, 3
@@ -16,16 +17,7 @@ _CLASSES = ('plane', 'car', 'bird', 'cat', 'deer',
             'dog', 'frog', 'horse', 'ship', 'truck')
 
 def cifar10_preprocess(image, label, mode):
-  """Preprocess Inputs function
-
-  Args:
-    image:
-    label:
-    mode:
-
-  Returns:
-
-  """
+  """Preprocess Inputs function"""
   image = tf.image.per_image_standardization(image)
   image = tf.image.resize_image_with_crop_or_pad(image, _HEIGHT, _WIDTH)
 
@@ -38,7 +30,6 @@ def cifar10_preprocess(image, label, mode):
       image = tf.random_crop(image, [_HEIGHT, _WIDTH, _DEPTH])
       image = tf.image.random_flip_left_right(image)
     return image, label
-
 
 def main():
 
@@ -92,7 +83,7 @@ def main():
             tf.estimator.ModeKeys.TRAIN, cifar10[0], None, batch_size,
             cifar10_preprocess, shuffle_buffer, cpu_cores, multi_gpu),
         steps=epochs_per_eval * steps_per_epoch,
-        hooks=[ProgressBar(training_epochs, steps_per_epoch, tensors_to_log)])
+        hooks=[ProgressBarHook(training_epochs, steps_per_epoch, tensors_to_log)])
 
     print("\nStart evaluating...")
     eval_results = classifier.evaluate(
@@ -106,7 +97,6 @@ def main():
   # ###################################
   output_dir = 'model/projector'
 
-  # Randomly pick 50 samples from each class
   images, _ = get_samples(cifar10[0],
                           logdir=output_dir,
                           samples_per_class=100)
@@ -123,6 +113,26 @@ def main():
       axis=0)
 
   visualize_embeddings(images, embeddings, output_dir)
+
+
+def get_samples(data, samples_per_class, logdir):
+  """Randomly take N samples per class
+  """
+  images, labels = data
+
+  df = pd.DataFrame(labels, columns=['labels']).groupby('labels')
+  samples = []
+  meta_file = open(os.path.join(logdir, 'metadata.csv'), 'w')
+  for cls in df.groups:
+    samples_per_list = df.get_group(cls).sample(samples_per_class).index.values
+    samples.append(list(samples_per_list))
+    for s in samples_per_list:
+      meta_file.write('{},{}\n'.format(s, _CLASSES[cls]))
+
+  meta_file.close()
+  # flatten list
+  samples_idx = [item for sublist in samples for item in sublist]
+  return images[samples_idx], labels[samples_idx]
 
 
 if __name__ == '__main__':

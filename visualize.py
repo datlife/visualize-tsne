@@ -1,7 +1,6 @@
 """Visualize Embeddings on Tensorboard using Projector plug-in."""
 import os
 import numpy as np
-import pandas as pd
 from scipy.misc import imsave
 
 import tensorflow as tf
@@ -42,37 +41,7 @@ def visualize_embeddings(images, embeddings, output_dir,
 
     projector.visualize_embeddings(summary_writer, config)
     saver = tf.train.Saver([embedding_var])
-
     saver.save(sess, embeddings_path, 1)
-
-
-def get_samples(data, samples_per_class, logdir):
-  """
-
-  Args:
-    data:
-    samples_per_class:
-    logdir:
-
-  Returns:
-
-  """
-  images, labels = data
-
-  df = pd.DataFrame(labels, columns=['labels']).groupby('labels')
-  samples = []
-  meta_file = open(os.path.join(logdir, 'metadata.csv'), 'w')
-  for cls in df.groups:
-    samples_per_list = df.get_group(cls).sample(samples_per_class).index.values
-    samples.append(list(samples_per_list))
-    for s in samples_per_list:
-      meta_file.write('{},{}\n'.format(s, _CLASSES[cls]))
-
-  meta_file.close()
-  # flatten list
-  samples_idx = [item for sublist in samples for item in sublist]
-  return images[samples_idx], labels[samples_idx]
-
 
 def images_to_sprite(data):
   """Creates the sprite image along with any necessary padding.
