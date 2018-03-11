@@ -1,31 +1,75 @@
-import tensorflow as tf
+# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""Some common SessionRunHook classes.
+
+@@LoggingTensorHook
+@@StopAtStepHook
+@@CheckpointSaverHook
+@@StepCounterHook
+@@NanLossDuringTrainingError
+@@NanTensorHook
+@@SummarySaverHook
+@@GlobalStepWaiterHook
+@@ProfilerHook
+@@ProgressBarHook
+"""
+
 import numpy as np
 
 from tensorflow.python.training import training_util
 from tensorflow.python.training.session_run_hook import SessionRunArgs
 from tensorflow.python.training.basic_session_run_hooks import _as_graph_element
+from tensorflow.python.keras.utils import Progbar
 
-class ProgressBar(tf.train.SessionRunHook):
-  """Monitors training progress, similar to Keras training.
+@tf_export('train.ProgressBarHook')
+class ProgressBarHook(tf.train.SessionRunHook):
+  """Monitors training progress. This Hook uses `tf.keras.utils.ProgBar` to
+  write messages to stdout.
 
-  This Logger uses `tf.keras.utils.Progbar` to write messages
-  to stdout.
+  Example:
+    ```python
+    estimator = tf.estimator.DNNClassifier(hidden_units=256, feature_columns=64)
+    estimator.train(
+      input_fn=lambda: input_fn,
+      hooks=[ProgressBar(
+        epochs=3,
+        steps_per_epoch=4,
+        tensors_to_log=['loss', 'acc'])])
+    ```
+    # output
+    ```
+    Epoch 1/5:
+    4/4 [======================]4/4 - 13s 3s/step - acc: 0.7 - loss: 0.4124
 
-  Note: avoid to call the following command, it will cause messy looking
-  stdout.
-  ```python
-    tf.logging.set_verbosity(tf.logging.INFO)
-  ```
+    Epoch 2/5:
+    4/4 [======================]4/4 - 1s 175ms/step - acc: 0.7235 - loss: 0.2313
+
+    Epoch 3/5:
+    4/4 [======================]4/4 - 1s 168ms/step - acc: 0.7814 - loss: 0.1951
+    ```
 
   """
   def __init__(self,
                epochs,
                steps_per_epoch,
                tensors_to_log=None):
-    """Initializes a `ProgressBar`
+    """Initializes `ProgressBarHook` instance
 
     Args:
-      epochs: `int`, Total number of expected epochs, None if unknown.
+      epochs: `int`, Total number of expected epochs. It is usually calcuated
+        by dividing number of training steps to `steps_per_epoch`.
       steps_per_epoch: `int`, numbers of expected iterations per epoch
       tensors_to_log: - optional - can be:
           `dict` maps string-valued tags to tensors/tensor names,
@@ -48,43 +92,43 @@ class ProgressBar(tf.train.SessionRunHook):
       self._tensors = None
 
   def begin(self):
-    self._global_step_tensor = training_util._get_global_step_read()
+    self._global_step_tensor = training_util._get_global_step_read()  # pylint: disable=protected-access
     if self._global_step_tensor is None:
       raise RuntimeError(
-        "Global step should be created to use KerasLogger")
+          "Global step should be created to use ProgressBarHook")
 
     # Convert names to tensors if given
     if self._tensors:
       self._current_tensors = {tag: _as_graph_element(tensor)
                                for (tag, tensor) in self._tensors.items()}
 
-  def after_create_session(self, session, coord):
+  def after_create_session(self, session, coord):  # pylint: disable=unused-argument
     # Init current_epoch and current_step
     self._curr_step = session.run(self._global_step_tensor)
     if self._curr_step != 0:
-      print("Resuming training from global step(s): %s...\n" % self._curr_step)
+      print('Resuming training from global step(s): %s...\n' % self._curr_step)
 
     self._curr_epoch = int(np.floor(self._curr_step / self._step_per_epoch))
     self._curr_step -= self._curr_epoch * self._step_per_epoch
     self._first_run = True
 
-
-  def before_run(self, run_context):
+  def before_run(self, run_context):  # pylint: disable=unused-argument
     if self._first_run is  True:
       self._curr_epoch += 1
       print('Epoch %s/%s:' % (self._curr_epoch, self._epochs))
-      self.progbar = tf.keras.utils.Progbar(target=self._step_per_epoch)
+      self.progbar = Progbar(target=self._step_per_epoch)
       self._first_run = False
 
     elif self._curr_step % self._step_per_epoch == 0:
       self._curr_epoch += 1
       self._curr_step = 0
       print('Epoch %s/%s:' % (self._curr_epoch, self._epochs))
-      self.progbar = tf.keras.utils.Progbar(target=self._step_per_epoch)
+      self.progbar = Progbar(target=self._step_per_epoch)
 
     if self._tensors:
       return SessionRunArgs(self._current_tensors)
 
+    return None
 
   def after_run(self,
                 run_context,  # pylint: disable=unused-argument
@@ -93,7 +137,6 @@ class ProgressBar(tf.train.SessionRunHook):
       values = self._extract_tensors_info(run_values.results)
     else:
       values = None
-
     self._curr_step += 1
     self.progbar.update(self._curr_step, values=values)
 
